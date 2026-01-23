@@ -5,7 +5,7 @@ module.exports = (req, res, next) => {
   if (!token) {
     return res.status(401).json({ error: "Unauthorized" });
   }
-
+  //AI assisted help find dependacy and fix an error I had below
   try {
     req.user = jwt.verify(token, "SECRET_KEY");
     next();
