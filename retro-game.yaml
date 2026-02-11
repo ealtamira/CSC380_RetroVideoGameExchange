@@ -1,13 +1,14 @@
 openapi: 3.0.3
 info:
   title: Retro Video Game Exchange API
-  description: API for trading used retro video games
+  description: REST API for trading retro video games (RMM Level 3 - HATEOAS)
   version: 1.0.0
 
 servers:
   - url: http://localhost:3000/api/v1
 
 components:
+
   securitySchemes:
     bearerAuth:
       type: http
@@ -15,6 +16,7 @@ components:
       bearerFormat: JWT
 
   schemas:
+
     Error:
       type: object
       properties:
@@ -51,6 +53,14 @@ components:
           items:
             $ref: '#/components/schemas/Link'
 
+    UserUpdate:
+      type: object
+      properties:
+        name:
+          type: string
+        streetAddress:
+          type: string
+
     Game:
       type: object
       properties:
@@ -76,8 +86,45 @@ components:
           items:
             $ref: '#/components/schemas/Link'
 
-security:
-  - bearerAuth: []
+    GameCreate:
+      type: object
+      required:
+        - name
+        - publisher
+        - yearPublished
+        - system
+        - condition
+      properties:
+        name:
+          type: string
+        publisher:
+          type: string
+        yearPublished:
+          type: integer
+        system:
+          type: string
+        condition:
+          type: string
+          enum: [mint, good, fair, poor]
+        previousOwners:
+          type: integer
+
+    GameUpdate:
+      type: object
+      properties:
+        name:
+          type: string
+        publisher:
+          type: string
+        yearPublished:
+          type: integer
+        system:
+          type: string
+        condition:
+          type: string
+          enum: [mint, good, fair, poor]
+        previousOwners:
+          type: integer
 
 paths:
 
@@ -85,6 +132,7 @@ paths:
     post:
       summary: Register a new user
       tags: [Auth]
+      security: []
       requestBody:
         required: true
         content:
@@ -102,12 +150,19 @@ paths:
                   type: string
       responses:
         201:
-          description: User registered successfully
+          description: User created
+        400:
+          description: Invalid input
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 
   /auth/login:
     post:
       summary: Authenticate user
       tags: [Auth]
+      security: []
       requestBody:
         required: true
         content:
@@ -121,18 +176,22 @@ paths:
                   type: string
       responses:
         200:
-          description: JWT token returned
+          description: JWT returned
           content:
             application/json:
               schema:
                 properties:
                   token:
                     type: string
+        401:
+          description: Invalid credentials
 
   /users/me:
     get:
-      summary: Get authenticated user profile
+      summary: Get authenticated user
       tags: [Users]
+      security:
+        - bearerAuth: []
       responses:
         200:
           description: User profile
@@ -140,27 +199,57 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/User'
+        401:
+          description: Unauthorized
 
     put:
-      summary: Update authenticated user profile
+      summary: Update authenticated user (name & address only)
       tags: [Users]
+      security:
+        - bearerAuth: []
       requestBody:
         content:
           application/json:
             schema:
-              properties:
-                name:
-                  type: string
-                streetAddress:
-                  type: string
+              $ref: '#/components/schemas/UserUpdate'
       responses:
         200:
-          description: Updated user profile
+          description: User updated
+        400:
+          description: Invalid update
+        401:
+          description: Unauthorized
+
+  /users/{id}/games:
+    get:
+      summary: Get all games owned by a specific user
+      tags: [Users]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        200:
+          description: List of user's games
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Game'
+        404:
+          description: User not found
 
   /games:
     get:
-      summary: Search all games
+      summary: Search games
       tags: [Games]
+      security:
+        - bearerAuth: []
       parameters:
         - in: query
           name: name
@@ -181,35 +270,30 @@ paths:
                   $ref: '#/components/schemas/Game'
 
     post:
-      summary: Add a game for trade
+      summary: Create a game listing
       tags: [Games]
+      security:
+        - bearerAuth: []
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              required: [name, publisher, yearPublished, system, condition]
-              properties:
-                name:
-                  type: string
-                publisher:
-                  type: string
-                yearPublished:
-                  type: integer
-                system:
-                  type: string
-                condition:
-                  type: string
-                previousOwners:
-                  type: integer
+              $ref: '#/components/schemas/GameCreate'
       responses:
         201:
           description: Game created
+        400:
+          description: Invalid input
+        401:
+          description: Unauthorized
 
   /games/{id}:
     get:
       summary: Get game details
       tags: [Games]
+      security:
+        - bearerAuth: []
       parameters:
         - name: id
           in: path
@@ -219,10 +303,18 @@ paths:
       responses:
         200:
           description: Game details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Game'
+        404:
+          description: Game not found
 
     put:
       summary: Update a game (owner only)
       tags: [Games]
+      security:
+        - bearerAuth: []
       parameters:
         - name: id
           in: path
@@ -233,14 +325,22 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/Game'
+              $ref: '#/components/schemas/GameUpdate'
       responses:
         200:
           description: Game updated
+        401:
+          description: Unauthorized
+        403:
+          description: Not game owner
+        404:
+          description: Game not found
 
     delete:
       summary: Delete a game (owner only)
       tags: [Games]
+      security:
+        - bearerAuth: []
       parameters:
         - name: id
           in: path
@@ -250,3 +350,9 @@ paths:
       responses:
         204:
           description: Game deleted
+        401:
+          description: Unauthorized
+        403:
+          description: Not game owner
+        404:
+          description: Game not found
