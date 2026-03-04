@@ -1,0 +1,14 @@
+{
+  "name": "game-trader-mailer",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "kafkajs": "^2.2.4",
+    "nodemailer": "^6.9.13",
+    "mongoose": "^8.3.1",
+    "dotenv": "^16.4.5"
+  }
+}

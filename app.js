@@ -16,6 +16,39 @@ app.use(express.json());
 app.use(cors());
 
 /* ===========================
+   Kafka producer
+=========================== */
+
+const { Kafka } = require("kafkajs");
+
+const kafka = new Kafka({
+  clientId: "game-api",
+  brokers: ["kafka:9092"],
+});
+
+const producer = kafka.producer();
+
+async function initKafka() {
+  await producer.connect();
+  console.log("Kafka producer connected");
+}
+
+initKafka().catch(console.error);
+
+async function sendNotification(eventType, payload) {
+  try {
+    await producer.send({
+      topic: "email-notifications",
+      messages: [{ key: eventType, value: JSON.stringify({ eventType, ...payload }) }],
+    });
+    console.log(`Kafka message sent: ${eventType}`);
+  } catch (err) {
+    console.error("Kafka send error:", err);
+  }
+}
+
+
+/* ===========================
    AUTH MIDDLEWARE
 =========================== */
 
@@ -142,6 +175,34 @@ app.put("/api/v1/users/me", authenticate, async (req, res) => {
 
   res.json({ message: "User updated" });
 });
+
+app.put("/api/v1/users/me/password", authenticate, async (req, res) => {
+  const { currentPassword, newPassword } = req.body;
+  
+  if (!currentPassword || !newPassword) {
+    return res.status(400).json({ error: "currentPassword and newPassword required" });
+  }
+  
+  const user = await User.findById(req.user.id);
+  if (!user) return res.status(404).json({ error: "User not found" });
+  
+  const valid = await bcrypt.compare(currentPassword, user.password);
+  if (!valid) return res.status(401).json({ error: "Current password incorrect" });
+  
+  const hashed = await bcrypt.hash(newPassword, 10);
+  user.password = hashed;
+  await user.save();
+  
+  // Send notification
+  await sendNotification("PASSWORD_CHANGED", {
+    userId: user._id.toString(),
+    email: user.email,
+    name: user.name,
+  });
+  
+  res.json({ message: "Password updated" });
+});
+
 
 app.get("/api/v1/users/:id/games", authenticate, async (req, res) => {
   const userExists = await User.findById(req.params.id);
@@ -310,6 +371,13 @@ app.post("/api/v1/offers", authenticate, async (req, res) => {
     offeredGame: offeredGameId
   });
 
+  await sendNotification("OFFER_CREATED", {
+  offerId: offer._id.toString(),
+  offeredBy: offer.offeredBy.toString(),
+  offeredTo: offer.offeredTo.toString(),
+  });
+
+
   res.status(201).json(offer);
 });
 
@@ -355,6 +423,16 @@ app.put("/api/v1/offers/:id", authenticate, async (req, res) => {
 
   offer.status = req.body.status;
   await offer.save();
+
+  await sendNotification(
+    status === "accepted" ? "OFFER_ACCEPTED" : "OFFER_REJECTED",
+    {
+      offerId: offer._id.toString(),
+      offeredBy: offer.offeredBy.toString(),
+      offeredTo: offer.offeredTo.toString(),
+    }
+  );
+
 
   res.json(offer);
 });
