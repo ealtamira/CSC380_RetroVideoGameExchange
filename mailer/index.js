@@ -19,8 +19,8 @@ mongoose
     process.exit(1);
   });
 
-// Email transport (Mailtrap, Gmail, etc.)
-const transporter = nodemailer.createTransporter({
+// FIXED: Changed createTransporter to createTransport (The 'er' was a typo)
+const transporter = nodemailer.createTransport({
   host: process.env.SMTP_HOST,
   port: Number(process.env.SMTP_PORT || 587),
   secure: false,
@@ -46,7 +46,8 @@ async function sendEmail(to, subject, text) {
 
 const kafka = new Kafka({
   clientId: "mailer-service",
-  brokers: ["kafka:9092"],
+  // FIXED: Changed port from 9092 to 29092 to match internal Docker network
+  brokers: ["kafka:29092"], 
 });
 
 const consumer = kafka.consumer({ groupId: "mailer-group" });
@@ -59,6 +60,9 @@ async function run() {
 
   await consumer.run({
     eachMessage: async ({ message }) => {
+      // FIXED: Added check to ensure message.value exists
+      if (!message.value) return;
+      
       const data = JSON.parse(message.value.toString());
       const { eventType } = data;
 
@@ -69,7 +73,7 @@ async function run() {
             if (user) {
               await sendEmail(
                 user.email,
-                "Your password was changed",
+                "Security Alert: Password Changed",
                 `Hi ${user.name},\n\nYour password was recently changed.\n\nIf this wasn't you, please contact support.\n\nGameTrader`
               );
             }

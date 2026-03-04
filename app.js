@@ -23,14 +23,32 @@ const { Kafka } = require("kafkajs");
 
 const kafka = new Kafka({
   clientId: "game-api",
-  brokers: ["kafka:9092"],
+  brokers: ["kafka:29092"],
 });
 
 const producer = kafka.producer();
 
 async function initKafka() {
-  await producer.connect();
-  console.log("Kafka producer connected");
+  const admin = kafka.admin();
+  try {
+    await admin.connect();
+    console.log("Kafka Admin connected");
+
+    const topics = await admin.listTopics();
+    if (!topics.includes("email-notifications")) {
+      await admin.createTopics({
+        topics: [{ topic: "email-notifications", numPartitions: 1 }],
+      });
+      console.log("Topic 'email-notifications' created.");
+    }
+
+    await admin.disconnect();
+
+    await producer.connect();
+    console.log("Kafka producer connected");
+  } catch (error) {
+    console.error("Error initializing Kafka:", error);
+  }
 }
 
 initKafka().catch(console.error);
@@ -163,15 +181,31 @@ app.get("/api/v1/users/me", authenticate, async (req, res) => {
 
 
 app.put("/api/v1/users/me", authenticate, async (req, res) => {
-  const { name, streetAddress } = req.body;
+  const { name, streetAddress, password } = req.body;
+  const updateData = {};
+
+  if (name) updateData.name = name;
+  if (streetAddress) updateData.streetAddress = streetAddress;
+
+  if (password) {
+    const salt = await bcrypt.genSalt(10);
+    updateData.password = await bcrypt.hash(password, salt);
+  }
 
   const user = await User.findByIdAndUpdate(
     req.user.id,
-    { $set: { ...(name && { name }), ...(streetAddress && { streetAddress }) } },
+    { $set: updateData },
     { new: true }
   );
 
   if (!user) return res.status(404).json({ error: "User not found" });
+
+  if (password) {
+    await sendNotification("PASSWORD_CHANGED", {
+      userId: user._id.toString(),
+      email: user.email
+    });
+  }
 
   res.json({ message: "User updated" });
 });
