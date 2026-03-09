@@ -79,6 +79,7 @@ async function initKafka() {
         topics: [{
           topic: "user",
           numPartitions: 1,
+          replicationFactor: 1,
         }],
       });
       console.log("Topic 'user' created.");
@@ -89,6 +90,11 @@ async function initKafka() {
     await producer.connect();
     console.log("Kafka producer connected");
   } catch (error) {
+    if (error.type === 'TOPIC_ALREADY_EXISTS') {
+      console.log("Topic 'user' already exists, continuing...");
+      await producer.connect();
+      return;
+    }
     console.error("Error initializing Kafka:", error);
     setTimeout(initKafka, 5000);
   }
