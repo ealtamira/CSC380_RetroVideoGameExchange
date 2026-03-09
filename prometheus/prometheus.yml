@@ -1,0 +1,33 @@
+global:
+  scrape_interval: 15s # How often to collect data
+
+scrape_configs:
+  # Monitor Prometheus itself
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # Monitor your two API instances (Load Balanced)
+  - job_name: 'api-servers'
+    static_configs:
+      - targets: ['api1:3000', 'api2:3000']
+
+  # Monitor the Mailer worker
+  - job_name: 'mailer-service'
+    static_configs:
+      - targets: ['mailer:3000']
+
+  # Monitor NGINX (Requires the stub_status module to be active)
+  - job_name: 'nginx'
+    static_configs:
+      - targets: ['nginx:80']
+
+  # Monitor MongoDB (Requires mongodb-exporter container)
+  - job_name: 'mongodb'
+    static_configs:
+      - targets: ['mongodb-exporter:9216']
+
+  # Monitor Kafka (Requires kafka-exporter container)
+  - job_name: 'kafka'
+    static_configs:
+      - targets: ['kafka-exporter:9308']

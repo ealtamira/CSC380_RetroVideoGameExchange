@@ -5,6 +5,8 @@ services:
     build: .
     container_name: api1
     env_file: .env
+    networks:
+      - app-network
     depends_on:
       - mongo
       - kafka
@@ -13,6 +15,8 @@ services:
     build: .
     container_name: api2
     env_file: .env
+    networks:
+      - app-network
     depends_on:
       - mongo
       - kafka
@@ -22,17 +26,20 @@ services:
     container_name: mongodb
     volumes:
       - mongo_data:/data/db
+    networks:
+      - app-network
 
   nginx:
     build: ./nginx
     container_name: nginx_lb
     ports:
       - "8080:80"
+    networks:
+      - app-network
     depends_on:
       - api1
       - api2
 
-  # FIXED KAFKA (No Zookeeper/KRaft Mode)
   kafka:
     image: confluentinc/cp-kafka:latest
     container_name: kafka
@@ -49,14 +56,69 @@ services:
       CLUSTER_ID: 'MkU3ODA4NGU2OEzZTMxNDVi'
     ports:
       - "9092:9092"
+    networks:
+      - app-network
 
   mailer:
-    build: ./mailer  # This points to your mailer folder
+    build: ./mailer
     container_name: mailer
     env_file: .env
+    networks:
+      - app-network
     depends_on:
       - kafka
       - mongo
 
+  # --- MONITORING STACK ---
+  
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+    networks:
+      - app-network
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    ports:
+      - "3001:3000" # Access at http://localhost:3001
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+    networks:
+      - app-network
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+  mongodb-exporter:
+    image: bitnami/mongodb-exporter:latest
+    environment:
+      - MONGODB_URI=mongodb://mongo:27017/gamedb
+    networks:
+      - app-network
+    depends_on:
+      - mongo
+
+  kafka-exporter:
+    image: danielqsj/kafka-exporter:latest
+    command: ["--kafka.server=kafka:29092"]
+    networks:
+      - app-network
+    depends_on:
+      - kafka
+    restart: on-failure
+
+networks:
+  app-network:
+    driver: bridge
+
 volumes:
   mongo_data:
+  grafana_data:

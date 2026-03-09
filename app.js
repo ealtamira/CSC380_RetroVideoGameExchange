@@ -2,6 +2,8 @@
 require("dotenv").config();
 
 const express = require("express");
+const client = require('prom-client'); //
+const register = new client.Registry(); //
 const jwt = require("jsonwebtoken");
 const mongoose = require("mongoose");
 const bcrypt = require("bcryptjs");
@@ -14,6 +16,44 @@ const app = express();
 const jwtSecret = process.env.JWT_SECRET || 'supersecretkey';
 app.use(express.json());
 app.use(cors());
+
+/* ===========================
+   PROMETHEUS MONITORING
+=========================== */
+
+// 1. Collect default metrics (CPU, Memory, etc.)
+client.collectDefaultMetrics({ register }); //
+
+// 2. Custom Metric: Track HTTP requests by path and status
+const httpRequestCounter = new client.Counter({
+  name: 'http_requests_total',
+  help: 'Total number of HTTP requests',
+  labelNames: ['method', 'route', 'status']
+});
+register.registerMetric(httpRequestCounter); //
+
+// 3. Custom Metric: Track Kafka messages produced
+const kafkaProducerCounter = new client.Counter({
+  name: 'kafka_messages_produced_total',
+  help: 'Total Kafka messages sent from API',
+  labelNames: ['event_type']
+});
+register.registerMetric(kafkaProducerCounter); //
+
+// Middleware to track requests automatically
+app.use((req, res, next) => {
+  res.on('finish', () => {
+    const route = req.route ? req.route.path : req.path;
+    httpRequestCounter.labels(req.method, route, res.statusCode).inc();
+  });
+  next();
+});
+
+// 4. The /metrics endpoint for Prometheus to scrape
+app.get('/metrics', async (req, res) => {
+  res.set('Content-Type', register.contentType);
+  res.end(await register.metrics());
+}); //
 
 /* ===========================
    Kafka producer
@@ -33,21 +73,24 @@ async function initKafka() {
   try {
     await admin.connect();
     console.log("Kafka Admin connected");
-
     const topics = await admin.listTopics();
-    if (!topics.includes("email-notifications")) {
+    if (!topics.includes("user")) {
       await admin.createTopics({
-        topics: [{ topic: "email-notifications", numPartitions: 1 }],
+        topics: [{
+          topic: "user",
+          numPartitions: 1,
+        }],
       });
-      console.log("Topic 'email-notifications' created.");
+      console.log("Topic 'user' created.");
+      //TODO: Change topic name to User
+      await new Promise(resolve => setTimeout(resolve, 2000));
     }
-
     await admin.disconnect();
-
     await producer.connect();
     console.log("Kafka producer connected");
   } catch (error) {
     console.error("Error initializing Kafka:", error);
+    setTimeout(initKafka, 5000);
   }
 }
 
@@ -56,9 +99,13 @@ initKafka().catch(console.error);
 async function sendNotification(eventType, payload) {
   try {
     await producer.send({
-      topic: "email-notifications",
+      topic: "user",
       messages: [{ key: eventType, value: JSON.stringify({ eventType, ...payload }) }],
     });
+
+    // Increment the Prometheus metric for Kafka streams
+    kafkaProducerCounter.labels(eventType).inc(); //
+
     console.log(`Kafka message sent: ${eventType}`);
   } catch (err) {
     console.error("Kafka send error:", err);
@@ -212,28 +259,28 @@ app.put("/api/v1/users/me", authenticate, async (req, res) => {
 
 app.put("/api/v1/users/me/password", authenticate, async (req, res) => {
   const { currentPassword, newPassword } = req.body;
-  
+
   if (!currentPassword || !newPassword) {
     return res.status(400).json({ error: "currentPassword and newPassword required" });
   }
-  
+
   const user = await User.findById(req.user.id);
   if (!user) return res.status(404).json({ error: "User not found" });
-  
+
   const valid = await bcrypt.compare(currentPassword, user.password);
   if (!valid) return res.status(401).json({ error: "Current password incorrect" });
-  
+
   const hashed = await bcrypt.hash(newPassword, 10);
   user.password = hashed;
   await user.save();
-  
+
   // Send notification
   await sendNotification("PASSWORD_CHANGED", {
     userId: user._id.toString(),
     email: user.email,
     name: user.name,
   });
-  
+
   res.json({ message: "Password updated" });
 });
 
@@ -282,10 +329,10 @@ app.get("/api/v1/games", authenticate, async (req, res) => {
 app.get("/api/v1/games/me", authenticate, async (req, res) => {
   const { name, system } = req.query;
   let result = await Game.find({ ownerId: req.user.id });
-  
+
   if (name) result = result.filter(g => g.name.includes(name));
   if (system) result = result.filter(g => g.system === system);
-  
+
   res.json(result);
 });
 //end
@@ -406,9 +453,9 @@ app.post("/api/v1/offers", authenticate, async (req, res) => {
   });
 
   await sendNotification("OFFER_CREATED", {
-  offerId: offer._id.toString(),
-  offeredBy: offer.offeredBy.toString(),
-  offeredTo: offer.offeredTo.toString(),
+    offerId: offer._id.toString(),
+    offeredBy: offer.offeredBy.toString(),
+    offeredTo: offer.offeredTo.toString(),
   });
 
 
@@ -437,11 +484,11 @@ app.put("/api/v1/offers/:id", authenticate, async (req, res) => {
   //ai help
   const status = req.body?.status;
   if (!status) {
-  return res.status(400).json({ error: "status is required" });
+    return res.status(400).json({ error: "status is required" });
   }
-  
+
   if (!["accepted", "rejected"].includes(status)) {
-  return res.status(400).json({ error: `Invalid status: ${status}. Must be accepted or rejected` });
+    return res.status(400).json({ error: `Invalid status: ${status}. Must be accepted or rejected` });
   }
   //end of help
 

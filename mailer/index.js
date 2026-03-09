@@ -2,6 +2,34 @@ require("dotenv").config();
 const { Kafka } = require("kafkajs");
 const nodemailer = require("nodemailer");
 const mongoose = require("mongoose");
+const express = require("express"); //
+const client = require('prom-client'); //
+
+const app = express(); //
+const register = new client.Registry(); //
+
+//
+client.collectDefaultMetrics({ register });
+
+// Custom metric to track emails sent by the mailer
+const emailSentCounter = new client.Counter({
+  name: 'mailer_emails_sent_total',
+  help: 'Total number of emails sent by the mailer service',
+  labelNames: ['event_type', 'status']
+});
+register.registerMetric(emailSentCounter);
+
+//
+app.get('/metrics', async (req, res) => {
+  res.set('Content-Type', register.contentType);
+  res.end(await register.metrics());
+});
+
+// Start the metrics server on port 3000
+const METRICS_PORT = 3000;
+app.listen(METRICS_PORT, () => {
+  console.log(`Mailer metrics server running on port ${METRICS_PORT}`);
+});
 
 const userSchema = new mongoose.Schema({
   name: String,
@@ -19,7 +47,6 @@ mongoose
     process.exit(1);
   });
 
-// FIXED: Changed createTransporter to createTransport (The 'er' was a typo)
 const transporter = nodemailer.createTransport({
   host: process.env.SMTP_HOST,
   port: Number(process.env.SMTP_PORT || 587),
@@ -30,7 +57,7 @@ const transporter = nodemailer.createTransport({
   },
 });
 
-async function sendEmail(to, subject, text) {
+async function sendEmail(to, subject, text, eventType) {
   try {
     await transporter.sendMail({
       from: process.env.SMTP_FROM || "no-reply@gametrader.com",
@@ -38,31 +65,33 @@ async function sendEmail(to, subject, text) {
       subject,
       text,
     });
+    //
+    emailSentCounter.labels(eventType, 'success').inc();
     console.log(`Email sent to ${to}: ${subject}`);
   } catch (err) {
+    //
+    emailSentCounter.labels(eventType, 'failure').inc();
     console.error(`Email failed to ${to}:`, err);
   }
 }
 
 const kafka = new Kafka({
   clientId: "mailer-service",
-  // FIXED: Changed port from 9092 to 29092 to match internal Docker network
-  brokers: ["kafka:29092"], 
+  brokers: ["kafka:29092"],
 });
 
 const consumer = kafka.consumer({ groupId: "mailer-group" });
 
 async function run() {
   await consumer.connect();
-  await consumer.subscribe({ topic: "email-notifications", fromBeginning: false });
+  await consumer.subscribe({ topic: "user", fromBeginning: false });
 
   console.log("Mailer waiting for email notifications...");
 
   await consumer.run({
     eachMessage: async ({ message }) => {
-      // FIXED: Added check to ensure message.value exists
       if (!message.value) return;
-      
+
       const data = JSON.parse(message.value.toString());
       const { eventType } = data;
 
@@ -74,7 +103,8 @@ async function run() {
               await sendEmail(
                 user.email,
                 "Security Alert: Password Changed",
-                `Hi ${user.name},\n\nYour password was recently changed.\n\nIf this wasn't you, please contact support.\n\nGameTrader`
+                `Hi ${user.name},\n\nYour password was recently changed.\n\nIf this wasn't you, please contact support.\n\nGameTrader`,
+                eventType
               );
             }
             break;
@@ -84,18 +114,20 @@ async function run() {
               User.findById(data.offeredBy),
               User.findById(data.offeredTo),
             ]);
-            if (offeror) {
+            if (offeror && offeror.email) {
               await sendEmail(
                 offeror.email,
                 "You created a game trade offer",
-                `Hi ${offeror.name},\n\nYour game trade offer has been created.\n\nGameTrader`
+                `Hi ${offeror.name},\n\nYour game trade offer has been created.\n\nGameTrader`,
+                eventType
               );
             }
-            if (offeree) {
+            if (offeree && offeree.email) {
               await sendEmail(
                 offeree.email,
                 "You received a new game trade offer",
-                `Hi ${offeree.name},\n\nSomeone wants to trade games with you!\n\nGameTrader`
+                `Hi ${offeree.name},\n\nSomeone wants to trade games with you!\n\nGameTrader`,
+                eventType
               );
             }
             break;
@@ -107,18 +139,20 @@ async function run() {
               User.findById(data.offeredTo),
             ]);
             const action = eventType === "OFFER_ACCEPTED" ? "accepted" : "rejected";
-            if (sender) {
+            if (sender && sender.email) {
               await sendEmail(
                 sender.email,
                 `Your game offer was ${action}`,
-                `Hi ${sender.name},\n\nYour game offer was ${action}.\n\nGameTrader`
+                `Hi ${sender.name},\n\nYour game offer was ${action}.\n\nGameTrader`,
+                eventType
               );
             }
-            if (receiver) {
+            if (receiver && receiver.email) {
               await sendEmail(
                 receiver.email,
                 `You ${action} a game offer`,
-                `Hi ${receiver.name},\n\nYou ${action} a game trade offer.\n\nGameTrader`
+                `Hi ${receiver.name},\n\nYou ${action} a game trade offer.\n\nGameTrader`,
+                eventType
               );
             }
             break;
