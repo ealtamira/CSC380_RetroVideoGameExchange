@@ -18,6 +18,27 @@ app.use(express.json());
 app.use(cors());
 
 /* ===========================
+   REDIS CACHE (The Enhancement)
+=========================== */
+const { createClient } = require('redis');
+
+const redisClient = createClient({
+  url: 'redis://redis:6379'
+});
+
+redisClient.on('error', (err) => console.log('Redis Client Error', err));
+
+async function connectRedis() {
+  try {
+    await redisClient.connect();
+    console.log("Connected to Redis distributed cache");
+  } catch (err) {
+    console.error("Redis connection failed:", err);
+  }
+}
+connectRedis();
+
+/* ===========================
    PROMETHEUS MONITORING
 =========================== */
 
@@ -83,7 +104,6 @@ async function initKafka() {
         }],
       });
       console.log("Topic 'user' created.");
-      //TODO: Change topic name to User
       await new Promise(resolve => setTimeout(resolve, 2000));
     }
     await admin.disconnect();
@@ -321,14 +341,30 @@ const Game = mongoose.model("Game", gameSchema);
 
 
 app.get("/api/v1/games", authenticate, async (req, res) => {
-  const { name, system } = req.query;
+  const cacheKey = "all_games_list";
 
-  let result = await Game.find();
+  try {
+    // 1. Check Redis
+    const cachedGames = await redisClient.get(cacheKey);
+    if (cachedGames) {
+      console.log("REDIS CACHE HIT: Returning data from memory");
+      return res.json(JSON.parse(cachedGames));
+    }
 
-  if (name) result = result.filter(g => g.name.includes(name));
-  if (system) result = result.filter(g => g.system === system);
+    // 2. Cache Miss - Hit MongoDB
+    console.log("REDIS CACHE MISS: Querying MongoDB");
+    const games = await Game.find();
 
-  res.json(result);
+    // 3. Store in Redis for 60 seconds
+    await redisClient.setEx(cacheKey, 60, JSON.stringify(games));
+
+    res.json(games);
+  } catch (err) {
+    console.error("Caching Error:", err);
+    // Fallback to normal DB query if Redis fails
+    const games = await Game.find();
+    res.json(games);
+  }
 });
 
 //ai help
@@ -349,26 +385,21 @@ app.post("/api/v1/games", authenticate, async (req, res) => {
   if (!name || !publisher || !yearPublished || !system || !condition)
     return res.status(400).json({ error: "Missing required fields" });
 
-  const newGame = {
-    id: uuidv4(),
-    name,
-    publisher,
-    yearPublished,
-    system,
-    condition,
-    previousOwners: previousOwners || 0,
-    ownerId: req.user.id,
-    links: []
-  };
+  try {
+    const game = await Game.create({
+      ...req.body,
+      ownerId: req.user.id
+    });
+    await redisClient.del("all_games_list");
+    console.log("Redis Cache Invalidated: 'all_games_list' removed.");
+    const gameJson = game.toObject();
+    gameJson.links = buildLinks("games", game._id.toString());
 
-  newGame.links = buildLinks("games", newGame.id);
-
-  const game = await Game.create({
-    ...req.body,
-    ownerId: req.user.id
-  });
-
-  res.status(201).json(game);
+    res.status(201).json(gameJson);
+  } catch (err) {
+    console.error("Error creating game:", err);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
 });
 
 app.get("/api/v1/games/:id", authenticate, async (req, res) => {
@@ -390,9 +421,11 @@ app.put("/api/v1/games/:id", authenticate, async (req, res) => {
   Object.assign(game, req.body);
   await game.save();
 
+  await redisClient.del("all_games_list");
+  console.log("Redis cache cleared: Game updated.");
+
   res.json({ message: "Game updated" });
 });
-
 
 app.delete("/api/v1/games/:id", authenticate, async (req, res) => {
   const game = await Game.findById(req.params.id);
@@ -403,6 +436,10 @@ app.delete("/api/v1/games/:id", authenticate, async (req, res) => {
   }
 
   await Game.findByIdAndDelete(req.params.id);
+
+  await redisClient.del("all_games_list");
+  console.log("Redis cache cleared: Game deleted.");
+
   res.status(204).send();
 });
 

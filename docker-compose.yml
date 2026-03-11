@@ -1,26 +1,7 @@
 version: "3.8"
 
 services:
-  api1:
-    build: .
-    container_name: api1
-    env_file: .env
-    networks:
-      - app-network
-    depends_on:
-      - mongo
-      - kafka
-
-  api2:
-    build: .
-    container_name: api2
-    env_file: .env
-    networks:
-      - app-network
-    depends_on:
-      - mongo
-      - kafka
-
+  # --- DATABASE ---
   mongo:
     image: mongo:6.0
     container_name: mongodb
@@ -29,17 +10,21 @@ services:
     networks:
       - app-network
 
-  nginx:
-    build: ./nginx
-    container_name: nginx_lb
+  # --- DISTRIBUTED CACHE (The Enhancement) ---
+  redis:
+    image: redis:7-alpine
+    container_name: redis_cache
     ports:
-      - "8080:80"
+      - "6379:6379"
     networks:
       - app-network
-    depends_on:
-      - api1
-      - api2
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
+  # --- MESSAGE BROKER ---
   kafka:
     image: confluentinc/cp-kafka:latest
     container_name: kafka
@@ -59,6 +44,46 @@ services:
     networks:
       - app-network
 
+  # --- API SERVICES ---
+  api1:
+    build: .
+    container_name: api1
+    env_file: .env
+    networks:
+      - app-network
+    depends_on:
+      mongo:
+        condition: service_started
+      kafka:
+        condition: service_started
+      redis:
+        condition: service_healthy
+
+  api2:
+    build: .
+    container_name: api2
+    env_file: .env
+    networks:
+      - app-network
+    depends_on:
+      mongo:
+        condition: service_started
+      kafka:
+        condition: service_started
+      redis:
+        condition: service_healthy
+
+  nginx:
+    build: ./nginx
+    container_name: nginx_lb
+    ports:
+      - "8080:80"
+    networks:
+      - app-network
+    depends_on:
+      - api1
+      - api2
+
   mailer:
     build: ./mailer
     container_name: mailer
@@ -70,7 +95,6 @@ services:
       - mongo
 
   # --- MONITORING STACK ---
-  
   prometheus:
     image: prom/prometheus:latest
     container_name: prometheus
@@ -86,7 +110,7 @@ services:
     image: grafana/grafana:latest
     container_name: grafana
     ports:
-      - "3001:3000" # Access at http://localhost:3001
+      - "3001:3000"
     environment:
       - GF_SECURITY_ADMIN_PASSWORD=admin
     volumes:
@@ -97,6 +121,7 @@ services:
       - prometheus
     restart: unless-stopped
 
+  # Exporters
   mongodb-exporter:
     image: bitnami/mongodb-exporter:latest
     environment:
@@ -114,6 +139,16 @@ services:
     depends_on:
       - kafka
     restart: on-failure
+
+  redis-exporter:
+    image: oliver006/redis_exporter:latest
+    container_name: redis_exporter
+    environment:
+      - REDIS_ADDR=redis://redis:6379
+    networks:
+      - app-network
+    depends_on:
+      - redis
 
 networks:
   app-network:
